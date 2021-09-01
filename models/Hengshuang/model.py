@@ -1,7 +1,10 @@
 import torch
+import ipdb
+st = ipdb.set_trace
+from munch import Munch
 import torch.nn as nn
 from pointnet_util import PointNetFeaturePropagation, PointNetSetAbstraction
-from .transformer import TransformerBlock
+from transformer import TransformerBlock
 
 
 class TransitionDown(nn.Module):
@@ -49,24 +52,25 @@ class TransitionUp(nn.Module):
 class Backbone(nn.Module):
     def __init__(self, cfg):
         super().__init__()
-        npoints, nblocks, nneighbor, n_c, d_points = cfg.num_point, cfg.model.nblocks, cfg.model.nneighbor, cfg.num_class, cfg.input_dim
+        npoints, nblocks, nneighbor, out_dim, d_points = cfg.num_point, cfg.nblocks, cfg.nneighbor, cfg.out_dim, cfg.input_dim
         self.fc1 = nn.Sequential(
             nn.Linear(d_points, 32),
             nn.ReLU(),
             nn.Linear(32, 32)
         )
-        self.transformer1 = TransformerBlock(32, cfg.model.transformer_dim, nneighbor)
+        self.transformer1 = TransformerBlock(32, cfg.transformer_dim, nneighbor)
         self.transition_downs = nn.ModuleList()
         self.transformers = nn.ModuleList()
         for i in range(nblocks):
             channel = 32 * 2 ** (i + 1)
             self.transition_downs.append(TransitionDown(npoints // 4 ** (i + 1), nneighbor, [channel // 2 + 3, channel, channel]))
-            self.transformers.append(TransformerBlock(channel, cfg.model.transformer_dim, nneighbor))
+            self.transformers.append(TransformerBlock(channel, cfg.transformer_dim, nneighbor))
         self.nblocks = nblocks
     
     def forward(self, x):
         xyz = x[..., :3]
         points = self.transformer1(xyz, self.fc1(x))[0]
+        # update the every point using it's closest 16 points with transformer based attention
 
         xyz_and_feats = [(xyz, points)]
         for i in range(self.nblocks):
@@ -75,18 +79,57 @@ class Backbone(nn.Module):
             xyz_and_feats.append((xyz, points))
         return points, xyz_and_feats
 
+class PointTransformerSeg(nn.Module):
+    def __init__(self, cfg):
+        super().__init__()
+        self.backbone = Backbone(cfg)
+        npoints, nblocks, nneighbor, out_dim, d_points = cfg.num_point, cfg.nblocks, cfg.nneighbor, cfg.out_dim, cfg.input_dim
+        self.fc2 = nn.Sequential(
+            nn.Linear(32 * 2 ** nblocks, 512),
+            nn.ReLU(),
+            nn.Linear(512, 512),
+            nn.ReLU(),
+            nn.Linear(512, 32 * 2 ** nblocks)
+        )
+        self.transformer2 = TransformerBlock(32 * 2 ** nblocks, cfg.transformer_dim, nneighbor)
+        self.nblocks = nblocks
+        self.transition_ups = nn.ModuleList()
+        self.transformers = nn.ModuleList()
+        for i in reversed(range(nblocks)):
+            channel = 32 * 2 ** i
+            self.transition_ups.append(TransitionUp(channel * 2, channel, channel))
+            self.transformers.append(TransformerBlock(channel, cfg.transformer_dim, nneighbor))
+
+        self.fc3 = nn.Sequential(
+            nn.Linear(32, 64),
+            nn.ReLU(),
+            nn.Linear(64, 64),
+            nn.ReLU(),
+            nn.Linear(64, out_dim)
+        )    
+
+    def forward(self, x):
+        points, xyz_and_feats = self.backbone(x)
+        xyz = xyz_and_feats[-1][0]
+        points = self.transformer2(xyz, self.fc2(points))[0]
+        for i in range(self.nblocks):
+            points = self.transition_ups[i](xyz, points, xyz_and_feats[- i - 2][0], xyz_and_feats[- i - 2][1])
+            xyz = xyz_and_feats[- i - 2][0]
+            points = self.transformers[i](xyz, points)[0]        
+        return self.fc3(points)
+
 
 class PointTransformerCls(nn.Module):
     def __init__(self, cfg):
         super().__init__()
         self.backbone = Backbone(cfg)
-        npoints, nblocks, nneighbor, n_c, d_points = cfg.num_point, cfg.model.nblocks, cfg.model.nneighbor, cfg.num_class, cfg.input_dim
+        npoints, nblocks, nneighbor, out_dim, d_points = cfg.num_point, cfg.nblocks, cfg.nneighbor, cfg.out_dim, cfg.input_dim
         self.fc2 = nn.Sequential(
             nn.Linear(32 * 2 ** nblocks, 256),
             nn.ReLU(),
             nn.Linear(256, 64),
             nn.ReLU(),
-            nn.Linear(64, n_c)
+            nn.Linear(64, out_dim)
         )
         self.nblocks = nblocks
     
@@ -96,46 +139,25 @@ class PointTransformerCls(nn.Module):
         return res
 
 
-class PointTransformerSeg(nn.Module):
-    def __init__(self, cfg):
-        super().__init__()
-        self.backbone = Backbone(cfg)
-        npoints, nblocks, nneighbor, n_c, d_points = cfg.num_point, cfg.model.nblocks, cfg.model.nneighbor, cfg.num_class, cfg.input_dim
-        self.fc2 = nn.Sequential(
-            nn.Linear(32 * 2 ** nblocks, 512),
-            nn.ReLU(),
-            nn.Linear(512, 512),
-            nn.ReLU(),
-            nn.Linear(512, 32 * 2 ** nblocks)
-        )
-        self.transformer2 = TransformerBlock(32 * 2 ** nblocks, cfg.model.transformer_dim, nneighbor)
-        self.nblocks = nblocks
-        self.transition_ups = nn.ModuleList()
-        self.transformers = nn.ModuleList()
-        for i in reversed(range(nblocks)):
-            channel = 32 * 2 ** i
-            self.transition_ups.append(TransitionUp(channel * 2, channel, channel))
-            self.transformers.append(TransformerBlock(channel, cfg.model.transformer_dim, nneighbor))
-
-        self.fc3 = nn.Sequential(
-            nn.Linear(32, 64),
-            nn.ReLU(),
-            nn.Linear(64, 64),
-            nn.ReLU(),
-            nn.Linear(64, n_c)
-        )
-    
-    def forward(self, x):
-        points, xyz_and_feats = self.backbone(x)
-        xyz = xyz_and_feats[-1][0]
-        points = self.transformer2(xyz, self.fc2(points))[0]
-
-        for i in range(self.nblocks):
-            points = self.transition_ups[i](xyz, points, xyz_and_feats[- i - 2][0], xyz_and_feats[- i - 2][1])
-            xyz = xyz_and_feats[- i - 2][0]
-            points = self.transformers[i](xyz, points)[0]
-            
-        return self.fc3(points)
 
 
     
+
+
+if __name__ == '__main__':
+
+    input_val = torch.randn(2,1024,5).cuda()
+    cfg = Munch()
+
+    cfg.num_point = 1024
+    cfg.nneighbor = 16
+    cfg.nblocks =  4
+    cfg.transformer_dim =  512
+    cfg.input_dim = 3
+    cfg.out_dim = 64
+    cfg.num_clas = 64
+
+    # st()
+    pointTransSeg = PointTransformerSeg(cfg).cuda()
+    output = pointTransSeg(input_val)
+    st()

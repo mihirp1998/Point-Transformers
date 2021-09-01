@@ -1,4 +1,6 @@
 from pointnet_util import index_points, square_distance
+import ipdb
+st = ipdb.set_trace
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -26,6 +28,10 @@ class TransformerBlock(nn.Module):
         
     # xyz: b x n x 3, features: b x n x f
     def forward(self, xyz, features):
+        # st()
+        # find the closest 16 points to every point: do self attention with those 16 points
+        # as keys and the selected point as query and update the features of the query  point
+        
         dists = square_distance(xyz, xyz)
         knn_idx = dists.argsort()[:, :, :self.k]  # b x n x k
         knn_xyz = index_points(xyz, knn_idx)

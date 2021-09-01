@@ -3,6 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from time import time
 import numpy as np
+import ipdb 
+st = ipdb.set_trace
 
 
 # reference https://github.com/yanx27/Pointnet_Pointnet2_pytorch, modified by Yang You
@@ -181,6 +183,7 @@ class PointNetSetAbstraction(nn.Module):
             new_xyz: sampled points position data, [B, S, C]
             new_points_concat: sample points feature data, [B, S, D']
         """
+        # st()
         if self.group_all:
             new_xyz, new_points = sample_and_group_all(xyz, points)
         else:
@@ -270,7 +273,6 @@ class PointNetFeaturePropagation(nn.Module):
             last_channel = out_channel
 
     def forward(self, xyz1, xyz2, points1, points2):
-        # st()
         """
         Input:
             xyz1: input points position data, [B, C, N]
@@ -280,6 +282,7 @@ class PointNetFeaturePropagation(nn.Module):
         Return:
             new_points: upsampled points data, [B, D', N]
         """
+        st()
         xyz1 = xyz1.permute(0, 2, 1)
         xyz2 = xyz2.permute(0, 2, 1)
 
